@@ -1,106 +1,60 @@
-# BG Studio — AI Background Removal & Blending
+# Inkfinity Studio & Academy
 
-A Next.js app for removing and replacing image backgrounds, powered by
-Cloudinary's AI transformations. Drag-and-drop upload, before/after
-comparison slider, solid-color or generative-AI background replace, and a
-one-click download.
+Cinematic, gold-and-black Vite + React SPA for a premium tattoo studio and
+academy. Pure frontend — no backend, no database. Safe to deploy as a static
+site.
 
-## Stack
+## Required images
 
-- **Next.js 14** (App Router) — frontend + API routes in one project
-- **Cloudinary Node SDK** — all calls run server-side only, in `app/api/*`
-- **Tailwind CSS** for styling
-- **lucide-react** for icons
+Drop these into `/public` before building (the app references them directly):
 
-No Express, no database, no separate backend service — Next.js API routes
-serve as the backend.
+| File | Used for |
+|---|---|
+| `public/hero-bg.jpg` | Full-screen hero background |
+| `public/try-on-body.jpg` | Smart Try-On canvas base layer |
+| `public/academy-vibe.jpg` | Academy section background |
+| `public/tattoo-1.jpg` | Portfolio grid, slot 1 |
+| `public/tattoo-2.jpg` | Portfolio grid, slot 2 |
+| `public/tattoo-3.jpg` | Portfolio grid, slot 3 |
 
-## 1. Get your Cloudinary credentials
+If any file is missing, the browser will just show a broken image in that
+one spot — nothing else breaks.
 
-Sign in to the [Cloudinary console](https://console.cloudinary.com) and open
-**Dashboard**. You'll see your Cloud Name, API Key, and API Secret, plus a
-combined `CLOUDINARY_URL` string.
-
-> **Security note:** never commit real credentials to git, paste them into a
-> chat tool, or hardcode them in source files. This project reads them
-> exclusively from environment variables — see step 2.
-
-## 2. Configure environment variables
-
-Copy the example file:
-
-```bash
-cp .env.example .env.local
-```
-
-Open `.env.local` and fill in **either** the three discrete values:
-
-```
-CLOUDINARY_CLOUD_NAME=your_cloud_name
-CLOUDINARY_API_KEY=your_api_key
-CLOUDINARY_API_SECRET=your_api_secret
-```
-
-**or** the single combined URL (comment out or delete the other three if you
-use this):
-
-```
-CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
-```
-
-`.env.local` is already in `.gitignore` — it will never be committed.
-
-## 3. Install and run locally
+## Local development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+## Production build
 
-## 4. Using the app
+```bash
+npm run build
+```
 
-1. Drag and drop (or click to browse) a JPEG/PNG/WebP image, up to 10MB.
-2. Click **Remove Background** — this calls Cloudinary's
-   `e_background_removal` transformation and shows the result in a
-   before/after slider (drag the divider to compare).
-3. Pick **Solid Color** (reliable, works on every Cloudinary plan) or
-   **AI Generative** (requires Cloudinary's generative background-replace
-   add-on — if your account isn't provisioned for it, the app shows a clear
-   error and suggests the solid-color option instead).
-4. Click **Download** to save the final PNG.
+Outputs a static `dist/` folder.
 
-## 5. Deploying
-
-### Render (or any Node host)
+## Deploying on Render
 
 1. Push this repo to GitHub.
-2. Create a new **Web Service** (not a Static Site — this app needs a
-   Node server for the API routes).
-3. Build command: `npm install && npm run build`
-4. Start command: `npm start`
-5. In the service's **Environment** settings, add the same variables from
-   step 2 (`CLOUDINARY_URL` or the three discrete ones). Never put them in
-   `render.yaml` or any committed file.
+2. On Render: **New → Static Site**.
+3. Build command: `npm run build`
+4. Publish directory: `dist`
+5. No environment variables or backend service needed.
 
-### Vercel
+## Stack
 
-Vercel is Next.js's native host and requires zero config beyond adding the
-same environment variables in **Project Settings → Environment Variables**.
+- Vite + React 18
+- Tailwind CSS (custom `ink`/`gold` design tokens in `tailwind.config.js`)
+- Framer Motion for scroll reveals and micro-interactions
+- lucide-react for icons
 
-## Notes on the AI generative background replace feature
+## Notes
 
-Cloudinary's generative background replace is a paid AI capability that may
-require add-on provisioning depending on your plan. If a request to that
-feature fails, the app surfaces a clear message and points you to the
-solid-color option, which always works and doesn't depend on any add-on.
-
-## Limits worth knowing
-
-- Max upload size: 10MB (enforced both client-side and server-side)
-- Accepted types: JPEG, PNG, WebP
-- Background removal and generative replace both have generous timeouts
-  (25s and 40s respectively) since first-time AI transformations can be
-  slow — if Cloudinary is unusually slow, you'll get a clear timeout error
-  rather than a hung request.
+- The "Enhance & Apply" try-on effect is pure CSS (`mix-blend-mode: multiply`
+  + `contrast`/`saturate` filters) — no image processing backend.
+- The UPI payment and EMI authentication flows are mocked with local React
+  state and `setTimeout` — wire up a real payment gateway when ready.
+- Six of the nine portfolio images are Unsplash placeholders; swap the URLs
+  in `src/components/Portfolio.jsx` for real studio work.
