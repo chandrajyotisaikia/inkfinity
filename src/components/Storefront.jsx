@@ -5,7 +5,6 @@ import Hero from './Hero.jsx'
 import SmartTryOn from './SmartTryOn.jsx'
 import BookingCTA from './BookingCTA.jsx'
 import Academy from './Academy.jsx'
-import Portfolio from './Portfolio.jsx'
 import InstagramFeed from './InstagramFeed.jsx'
 import GoogleReviews from './GoogleReviews.jsx'
 import Footer from './Footer.jsx'
@@ -33,7 +32,6 @@ export default function Storefront() {
       <Navbar onBookNow={() => setBookingOpen(true)} onClientLogin={() => setLoginOpen(true)} />
       <Hero onBookNow={() => setBookingOpen(true)} />
       <SmartTryOn />
-      <Portfolio />
       <InstagramFeed />
       <GoogleReviews />
       <BookingCTA onBookNow={() => setBookingOpen(true)} />
