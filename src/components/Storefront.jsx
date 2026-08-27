@@ -7,6 +7,7 @@ import BookingCTA from './BookingCTA.jsx'
 import Academy from './Academy.jsx'
 import Portfolio from './Portfolio.jsx'
 import InstagramFeed from './InstagramFeed.jsx'
+import GoogleReviews from './GoogleReviews.jsx'
 import Footer from './Footer.jsx'
 import BookingModal from './BookingModal.jsx'
 import ClientLoginModal from './ClientLoginModal.jsx'
@@ -34,6 +35,7 @@ export default function Storefront() {
       <SmartTryOn />
       <Portfolio />
       <InstagramFeed />
+      <GoogleReviews />
       <BookingCTA onBookNow={() => setBookingOpen(true)} />
       <Academy />
       <Footer />
