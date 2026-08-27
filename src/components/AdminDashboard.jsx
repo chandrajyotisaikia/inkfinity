@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -7,7 +7,7 @@ import {
   ShieldCheck,
   Wallet,
   Boxes,
-  Megaphone,
+  MessageSquare,
   LogOut,
   Search,
   Check,
@@ -18,23 +18,452 @@ import {
   Plus,
   Menu,
   AlertTriangle,
-  MessageSquareText,
-  Sparkles,
   Send,
+  Sparkles,
+  DollarSign,
 } from 'lucide-react'
-import Toast from './Toast.jsx'
 
-// ---- Mock data -------------------------------------------------------
+// ========== MOCK DATA ==========
 
 const MOCK_BOOKINGS = [
-  { id: 1, name: 'Ananya Sharma', style: 'Fine Line', date: '2026-08-18', time: '2:00 PM', deposit: 2000, status: 'pending' },
-  { id: 2, name: 'Rohit Verma', style: 'Blackwork', date: '2026-08-19', time: '11:00 AM', deposit: 2000, status: 'approved' },
-  { id: 3, name: 'Priya Nair', style: 'Realism', date: '2026-08-19', time: '4:30 PM', deposit: 2000, status: 'approved' },
-  { id: 4, name: 'Karan Malhotra', style: 'Geometric', date: '2026-08-20', time: '1:00 PM', deposit: 2000, status: 'pending' },
-  { id: 5, name: 'Sneha Reddy', style: 'Japanese', date: '2026-08-21', time: '3:00 PM', deposit: 2000, status: 'approved' },
-  { id: 6, name: 'Aditya Kumar', style: 'Minimalist', date: '2026-08-22', time: '10:30 AM', deposit: 2000, status: 'rejected' },
-  { id: 7, name: 'Ishaan Gupta', style: 'Traditional', date: '2026-08-23', time: '5:00 PM', deposit: 2000, status: 'pending' },
+  { id: 1, name: 'Ananya Sharma', style: 'Fine Line', date: '2026-08-28', time: '2:00 PM', deposit: 2000, status: 'pending' },
+  { id: 2, name: 'Rohit Verma', style: 'Blackwork', date: '2026-08-29', time: '11:00 AM', deposit: 2000, status: 'approved' },
+  { id: 3, name: 'Priya Nair', style: 'Realism', date: '2026-08-29', time: '4:30 PM', deposit: 2000, status: 'approved' },
+  { id: 4, name: 'Karan Malhotra', style: 'Geometric', date: '2026-08-30', time: '1:00 PM', deposit: 2000, status: 'pending' },
+  { id: 5, name: 'Sneha Reddy', style: 'Japanese', date: '2026-09-01', time: '3:00 PM', deposit: 2000, status: 'approved' },
 ]
+
+const MOCK_WAIVERS = [
+  { id: 1, name: 'Ananya Sharma', signedAt: '2026-08-14 09:12 AM', status: 'complete' },
+  { id: 2, name: 'Rohit Verma', signedAt: '2026-08-13 06:40 PM', status: 'complete' },
+  { id: 3, name: 'Priya Nair', signedAt: '2026-08-13 02:05 PM', status: 'complete' },
+  { id: 4, name: 'Karan Malhotra', signedAt: '2026-08-11 07:55 PM', status: 'complete' },
+]
+
+const MOCK_REVENUE = [
+  { month: 'Jun', value: 45000 },
+  { month: 'Jul', value: 62000 },
+  { month: 'Aug', value: 78000 },
+]
+
+const MOCK_ARTISTS = [
+  { id: 1, name: 'Avinish Deka', role: 'Lead Artist', split: 60, revenue: 52000 },
+  { id: 2, name: 'Rimi Roy', role: 'Senior Artist', split: 55, revenue: 31000 },
+  { id: 3, name: 'Deep Sharma', role: 'Junior Artist', split: 40, revenue: 12000 },
+]
+
+const MOCK_INVENTORY = [
+  { id: 1, item: 'Numbing Cream', stock: 3, threshold: 8, unit: 'tubes' },
+  { id: 2, item: 'Stencil Paper', stock: 14, threshold: 20, unit: 'sheets' },
+  { id: 3, item: 'Needles — Liner', stock: 22, threshold: 15, unit: 'packs' },
+  { id: 4, item: 'Needles — Shader', stock: 6, threshold: 15, unit: 'packs' },
+  { id: 5, item: 'Black Ink', stock: 9, threshold: 6, unit: 'bottles' },
+]
+
+const MOCK_HEALED_CLIENTS = [
+  { id: 1, name: 'Meera Iyer', style: 'Fine Line', sessionDate: '2026-08-13', smsTriggered: false },
+  { id: 2, name: 'Arjun Rao', style: 'Blackwork', sessionDate: '2026-08-13', smsTriggered: false },
+  { id: 3, name: 'Divya Menon', style: 'Realism', sessionDate: '2026-08-12', smsTriggered: true },
+]
+
+const MOCK_TOUCHUP_CLIENTS = [
+  { id: 1, name: 'Vikram Singh', style: 'Traditional', lastSession: '2026-02-20' },
+  { id: 2, name: 'Neha Kapoor', style: 'Geometric', lastSession: '2026-02-15' },
+  { id: 3, name: 'Farhan Ali', style: 'Japanese', lastSession: '2026-02-12' },
+]
+
+// ========== SUB-COMPONENTS ==========
+
+function StatusBadge({ status }) {
+  const styles = {
+    pending: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    approved: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+    complete: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+  }
+  return (
+    <span className={`text-[11px] px-2.5 py-1 rounded-full border uppercase tracking-wide ${styles[status] || styles.pending}`}>
+      {status}
+    </span>
+  )
+}
+
+// Tab 1: Bookings
+function BookingsTab() {
+  const [bookings, setBookings] = useState(MOCK_BOOKINGS)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const updateStatus = (id, status) => {
+    setBookings(bookings.map((b) => (b.id === id ? { ...b, status } : b)))
+  }
+
+  const filtered = bookings.filter(
+    (b) =>
+      b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.style.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6 gap-4">
+        <div>
+          <h2 className="font-serif text-2xl mb-1">Bookings</h2>
+          <p className="text-white/40 text-sm">{bookings.length} total consultations</p>
+        </div>
+        <div className="relative">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search name or style..."
+            className="bg-black/40 border border-ink-line rounded-md pl-9 pr-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-gold"
+          />
+        </div>
+      </div>
+
+      <div className="border border-ink-line rounded-lg overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-ink-line text-left text-white/40 text-xs uppercase tracking-wide">
+                <th className="px-5 py-3 font-medium">Client</th>
+                <th className="px-5 py-3 font-medium">Style</th>
+                <th className="px-5 py-3 font-medium">Date & Time</th>
+                <th className="px-5 py-3 font-medium">Deposit</th>
+                <th className="px-5 py-3 font-medium">Status</th>
+                <th className="px-5 py-3 font-medium text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((b) => (
+                <tr key={b.id} className="border-b border-ink-line last:border-0 hover:bg-white/[0.02]">
+                  <td className="px-5 py-4 text-white/90">{b.name}</td>
+                  <td className="px-5 py-4 text-white/60">{b.style}</td>
+                  <td className="px-5 py-4 text-white/60">{b.date} · {b.time}</td>
+                  <td className="px-5 py-4">
+                    <span className="text-[11px] px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                      Deposit: ₹{b.deposit.toLocaleString()}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4">
+                    <StatusBadge status={b.status} />
+                  </td>
+                  <td className="px-5 py-4 text-right space-x-2">
+                    <button
+                      onClick={() => updateStatus(b.id, 'approved')}
+                      className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md border border-ink-line text-white/50 hover:border-emerald-500/50 hover:text-emerald-400 transition-colors"
+                    >
+                      <Check size={14} />
+                    </button>
+                    <button
+                      onClick={() => updateStatus(b.id, 'pending')}
+                      className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md border border-ink-line text-white/50 hover:border-red-500/50 hover:text-red-400 transition-colors"
+                    >
+                      <X size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Tab 2: Legal Vault
+function LegalVaultTab() {
+  return (
+    <div>
+      <div className="mb-6">
+        <h2 className="font-serif text-2xl mb-1">Legal Vault</h2>
+        <p className="text-white/40 text-sm">{MOCK_WAIVERS.length} signed digital waivers</p>
+      </div>
+
+      <div className="border border-ink-line rounded-lg divide-y divide-ink-line">
+        {MOCK_WAIVERS.map((w) => (
+          <div key={w.id} className="flex items-center justify-between px-5 py-4 hover:bg-white/[0.02]">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-gold/10 border border-gold/30 flex items-center justify-center shrink-0">
+                <ShieldCheck size={15} className="text-gold" />
+              </div>
+              <div>
+                <p className="text-sm text-white/90">{w.name}</p>
+                <p className="text-xs text-white/40">Signed {w.signedAt}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <StatusBadge status={w.status} />
+              <button className="flex items-center gap-1.5 text-xs text-white/50 hover:text-gold border border-ink-line hover:border-gold/40 rounded-md px-3 py-1.5 transition-colors">
+                <FileText size={13} />
+                View PDF
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Tab 3: Financials
+function FinancialsTab() {
+  const totalRevenue = MOCK_ARTISTS.reduce((sum, a) => sum + a.revenue, 0)
+  const monthlyExpenses = 12000
+  const totalPayouts = MOCK_ARTISTS.reduce((sum, a) => sum + (a.revenue * a.split) / 100, 0)
+  const netProfit = totalRevenue - totalPayouts
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h2 className="font-serif text-2xl mb-1">Financials & Payroll</h2>
+        <p className="text-white/40 text-sm">Revenue, expenses, and automated commission splits</p>
+      </div>
+
+      {/* Stats Row */}
+      <div className="grid sm:grid-cols-3 gap-4 mb-8">
+        <div className="bg-ink-panel border border-ink-line rounded-lg p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs uppercase tracking-widest text-white/40">Total Revenue</p>
+            <TrendingUp size={15} className="text-emerald-400" />
+          </div>
+          <p className="font-serif text-3xl">₹{totalRevenue.toLocaleString()}</p>
+        </div>
+        <div className="bg-ink-panel border border-ink-line rounded-lg p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs uppercase tracking-widest text-white/40">Monthly Expenses</p>
+            <TrendingDown size={15} className="text-red-400" />
+          </div>
+          <p className="font-serif text-3xl">₹{monthlyExpenses.toLocaleString()}</p>
+        </div>
+        <div className="bg-ink-panel border border-gold/30 rounded-lg p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs uppercase tracking-widest text-gold">Net Profit</p>
+            <Wallet size={15} className="text-gold" />
+          </div>
+          <p className="font-serif text-3xl text-gold">₹{netProfit.toLocaleString()}</p>
+        </div>
+      </div>
+
+      {/* Revenue Chart */}
+      <div className="bg-ink-panel border border-ink-line rounded-lg p-6 mb-8">
+        <p className="text-xs uppercase tracking-widest text-white/40 mb-5">Revenue — Last 3 Months</p>
+        <div className="flex items-end gap-4 h-40">
+          {MOCK_REVENUE.map((d, i) => {
+            const maxVal = Math.max(...MOCK_REVENUE.map((x) => x.value))
+            return (
+              <div key={i} className="flex-1 flex flex-col items-center gap-2">
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: `${(d.value / maxVal) * 100}%` }}
+                  transition={{ duration: 0.6 }}
+                  className="w-full rounded-t-sm bg-gradient-to-t from-gold to-gold/50"
+                />
+                <span className="text-[11px] text-white/40">{d.month}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Artist Roster */}
+      <div>
+        <p className="text-xs uppercase tracking-widest text-white/40 mb-4">Artist Roster — Commission Splits</p>
+        <div className="border border-ink-line rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-ink-line text-left text-white/40 text-xs uppercase tracking-wide">
+                <th className="px-5 py-3 font-medium">Artist</th>
+                <th className="px-5 py-3 font-medium">Role</th>
+                <th className="px-5 py-3 font-medium">Split %</th>
+                <th className="px-5 py-3 font-medium">Revenue</th>
+                <th className="px-5 py-3 font-medium text-right">Pending Payout</th>
+              </tr>
+            </thead>
+            <tbody>
+              {MOCK_ARTISTS.map((a) => {
+                const payout = Math.round((a.revenue * a.split) / 100)
+                return (
+                  <tr key={a.id} className="border-b border-ink-line last:border-0 hover:bg-white/[0.02]">
+                    <td className="px-5 py-4 text-white/90">{a.name}</td>
+                    <td className="px-5 py-4 text-white/50">{a.role}</td>
+                    <td className="px-5 py-4">
+                      <span className="text-[11px] px-2.5 py-1 rounded-full border border-gold/30 bg-gold/5 text-gold">
+                        {a.split}%
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-white/60">₹{a.revenue.toLocaleString()}</td>
+                    <td className="px-5 py-4 text-right text-gold font-medium">₹{payout.toLocaleString()}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Tab 4: Inventory
+function InventoryTab() {
+  const [inventory, setInventory] = useState(MOCK_INVENTORY)
+  const lowStockItems = inventory.filter((i) => i.stock < i.threshold)
+
+  const adjustStock = (id, delta) => {
+    setInventory((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, stock: Math.max(0, i.stock + delta) } : i))
+    )
+  }
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h2 className="font-serif text-2xl mb-1">Inventory — Burn Rate</h2>
+        <p className="text-white/40 text-sm">Stock levels for critical consumables</p>
+      </div>
+
+      {/* Alert */}
+      {lowStockItems.length > 0 && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-lg p-5 flex items-start gap-3">
+          <AlertTriangle size={20} className="text-red-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-red-400 mb-1">Low Supply Alert</p>
+            <p className="text-xs text-white/50">
+              {lowStockItems.map((i) => i.item).join(', ')} {lowStockItems.length === 1 ? 'is' : 'are'} below safe threshold.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Inventory Table */}
+      <div className="border border-ink-line rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-ink-line text-left text-white/40 text-xs uppercase tracking-wide">
+              <th className="px-5 py-3 font-medium">Item</th>
+              <th className="px-5 py-3 font-medium">Stock</th>
+              <th className="px-5 py-3 font-medium">Threshold</th>
+              <th className="px-5 py-3 font-medium">Status</th>
+              <th className="px-5 py-3 font-medium text-right">Adjust</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inventory.map((i) => {
+              const low = i.stock < i.threshold
+              return (
+                <tr key={i.id} className="border-b border-ink-line last:border-0 hover:bg-white/[0.02]">
+                  <td className="px-5 py-4 text-white/90">{i.item}</td>
+                  <td className="px-5 py-4 text-white/60">{i.stock} {i.unit}</td>
+                  <td className="px-5 py-4 text-white/60">{i.threshold} {i.unit}</td>
+                  <td className="px-5 py-4">
+                    <span
+                      className={`text-[11px] px-2.5 py-1 rounded-full border uppercase tracking-wide ${
+                        low
+                          ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                          : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      }`}
+                    >
+                      {low ? 'Low Stock' : 'In Stock'}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4 text-right space-x-2">
+                    <button
+                      onClick={() => adjustStock(i.id, -1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-md border border-ink-line text-white/50 hover:border-white/30"
+                    >
+                      −
+                    </button>
+                    <button
+                      onClick={() => adjustStock(i.id, 1)}
+                      className="w-7 h-7 flex items-center justify-center rounded-md border border-ink-line text-white/50 hover:border-white/30"
+                    >
+                      +
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// Tab 5: Marketing
+function MarketingTab() {
+  const [healedQueue, setHealedQueue] = useState(MOCK_HEALED_CLIENTS)
+  const [touchupSent, setTouchupSent] = useState(false)
+
+  const triggerSms = (id) => {
+    setHealedQueue((prev) => prev.map((c) => (c.id === id ? { ...c, smsTriggered: true } : c)))
+  }
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h2 className="font-serif text-2xl mb-1">Marketing & Automation</h2>
+        <p className="text-white/40 text-sm">Review requests and touch-up re-engagement</p>
+      </div>
+
+      {/* Day 14 Follow-Up */}
+      <div className="mb-10">
+        <div className="flex items-center gap-2 mb-4">
+          <MessageSquare size={15} className="text-gold" />
+          <p className="text-xs uppercase tracking-widest text-white/40">Healed & Happy — Day 14 Follow-Up</p>
+        </div>
+        <div className="border border-ink-line rounded-lg divide-y divide-ink-line">
+          {healedQueue.map((c) => (
+            <div key={c.id} className="flex items-center justify-between px-5 py-4">
+              <div>
+                <p className="text-sm text-white/90">{c.name}</p>
+                <p className="text-xs text-white/40">{c.style} · Session {c.sessionDate}</p>
+              </div>
+              {c.smsTriggered ? (
+                <span className="text-[11px] px-2.5 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 uppercase">
+                  SMS Sent
+                </span>
+              ) : (
+                <button
+                  onClick={() => triggerSms(c.id)}
+                  className="flex items-center gap-1.5 text-xs text-gold border border-gold/40 rounded-md px-3 py-1.5 hover:bg-gold/5"
+                >
+                  <Send size={12} />
+                  Send SMS
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 6-Month Touch-Up */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Sparkles size={15} className="text-gold" />
+            <p className="text-xs uppercase tracking-widest text-white/40">Touch-Up Pipeline — 6-Month</p>
+          </div>
+          <button
+            onClick={() => setTouchupSent(true)}
+            disabled={touchupSent}
+            className="flex items-center gap-1.5 text-xs text-gold border border-gold/40 rounded-md px-3 py-1.5 hover:bg-gold/5 disabled:opacity-40"
+          >
+            <Send size={12} />
+            {touchupSent ? 'Promo Sent' : 'Bulk Send'}
+          </button>
+        </div>
+        <div className="border border-ink-line rounded-lg divide-y divide-ink-line">
+          {MOCK_TOUCHUP_CLIENTS.map((c) => (
+            <div key={c.id} className="flex items-center justify-between px-5 py-4">
+              <div>
+                <p className="text-sm text-white/90">{c.name}</p>
+                <p className="text-xs text-white/40">{c.style} · Last session {c.lastSession}</p>
+              </div>
+              <span className="text-[11px] px-2.5 py-1 rounded-full border border-gold/30 bg-gold/5 text-gold">
+                6-month
+ ]
 
 const MOCK_WAIVERS = [
   { id: 1, name: 'Ananya Sharma', signedAt: '2026-08-14 09:12 AM', status: 'complete' },
