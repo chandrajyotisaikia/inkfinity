@@ -1,123 +1,808 @@
-'use client';
-import React, { useState, useRef } from 'react';
-import { Upload, Sparkles, RotateCcw } from 'lucide-react';
+import React, { useRef, useState, useCallback, useEffect } from 'react'
+import {
+  Sparkles,
+  RotateCcw,
+  Move,
+  Upload,
+  Camera,
+  Scissors,
+  Loader2,
+  X,
+  RotateCw,
+  Maximize2,
+  ImageOff,
+  CheckCircle2,
+  AlertCircle,
+} from 'lucide-react'
+import Reveal from './Reveal.jsx'
+
+const CANVAS_W = 520
+const CANVAS_H = 620
+
+/**
+ * ---------------------------------------------------------------------------
+ * PICSART API CONFIG
+ * ---------------------------------------------------------------------------
+ * SECURITY NOTE: this key ships inside the client bundle, so anyone who
+ * opens devtools can read it and make calls against your Picsart account
+ * and credit balance. This tradeoff was chosen explicitly to avoid standing
+ * up a backend. If usage/costs become a problem later, the fix is a thin
+ * serverless proxy that holds the key server-side — everything else in this
+ * file stays the same, only the fetch URLs below would point at your proxy
+ * instead of api.picsart.io directly.
+ * ---------------------------------------------------------------------------
+ */
+const PICSART_API_KEY = 'YOUR_PICSART_API_KEY' // <-- replace with your real key
+const PICSART_BASE = 'https://api.picsart.io/tools/1.0'
+
+/** Converts a dataURL into a File object Picsart's multipart API accepts. */
+function dataUrlToFile(dataUrl, filename) {
+  const [header, base64] = dataUrl.split(',')
+  const mimeMatch = header.match(/data:(.*?);base64/)
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/png'
+  const byteString = atob(base64)
+  const bytes = new Uint8Array(byteString.length)
+  for (let i = 0; i < byteString.length; i++) {
+    bytes[i] = byteString.charCodeAt(i)
+  }
+  return new File([bytes], filename, { type: mimeType })
+}
+
+/** Reads a Blob/File into a data: URL string. */
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+/**
+ * Removes the background of an image using Picsart's /removebg endpoint.
+ * Verified against Picsart's published OpenAPI schema: multipart/form-data,
+ * field `image` (binary), auth header `X-Picsart-API-Key`, JSON response
+ * shaped `{ data: { url }, status }`.
+ */
+async function picsartRemoveBackground(dataUrl) {
+  const file = dataUrlToFile(dataUrl, 'tattoo.png')
+  const form = new FormData()
+  form.append('image', file)
+  form.append('output_type', 'cutout')
+  form.append('format', 'PNG')
+
+  const response = await fetch(`${PICSART_BASE}/removebg`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'X-Picsart-API-Key': PICSART_API_KEY,
+    },
+    body: form,
+  })
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`Picsart removebg failed (${response.status}): ${detail.slice(0, 200)}`)
+  }
+
+  const json = await response.json()
+  const resultUrl = json?.data?.url
+  if (!resultUrl) throw new Error('Picsart removebg returned no result URL')
+
+  // Fetch the hosted result back into a data URL so it survives in local state
+  // without depending on Picsart's CDN staying reachable for the rest of the session.
+  const resultBlob = await fetch(resultUrl).then((r) => r.blob())
+  return blobToDataUrl(resultBlob)
+}
+
+/**
+ * ---------------------------------------------------------------------------
+ * AI ENHANCE — via our own secure backend (proxying Hugging Face)
+ * ---------------------------------------------------------------------------
+ * Picsart's /removebg (used above, for cleaning up an uploaded tattoo
+ * design) is a fast, mechanical operation. Making a tattoo look like it's
+ * really healed into skin is a different problem — it needs an actual
+ * generative image-editing model, which means a real secret (a Hugging Face
+ * token) that must never reach the browser. That's why this call goes to
+ * our own small backend instead of a third-party API directly — see
+ * /inkfinity-ai-backend in this project's sibling repo.
+ *
+ * VITE_AI_BACKEND_URL must be set at build time (Vite only exposes env vars
+ * prefixed VITE_ to client code) to the deployed backend's base URL, e.g.
+ * https://inkfinity-ai-backend.onrender.com — set this in a .env file for
+ * local dev and in your hosting provider's build environment variables for
+ * production. If it's not set, this function fails fast with a clear error
+ * instead of silently calling localhost in production.
+ * ---------------------------------------------------------------------------
+ */
+const AI_BACKEND_URL = import.meta.env.VITE_AI_BACKEND_URL
+
+async function aiEnhanceViaBackend(compositeDataUrl) {
+  if (!AI_BACKEND_URL) {
+    throw new Error(
+      'AI backend is not configured. Set VITE_AI_BACKEND_URL in your environment and rebuild.',
+    )
+  }
+
+  const controller = new AbortController()
+  // Image editing models can take 20-60s, more on a cold provider instance —
+  // matches the backend's own 60s timeout, plus a small margin.
+  const timeoutId = setTimeout(() => controller.abort(), 65_000)
+
+  let response
+  try {
+    response = await fetch(`${AI_BACKEND_URL.replace(/\/$/, '')}/api/enhance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: compositeDataUrl }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('AI enhancement timed out. Please try again.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
+  if (!response.ok) {
+    let message = `AI enhancement failed (status ${response.status}).`
+    try {
+      const errJson = await response.clone().json()
+      if (errJson?.error) message = errJson.error
+    } catch {
+      // response wasn't JSON (e.g. a raw image on success path never hits this branch) — keep default message
+    }
+    throw new Error(message)
+  }
+
+  const blob = await response.blob()
+  return blobToDataUrl(blob)
+}
+
+/**
+ * Composites the skin photo and the positioned/sized/rotated tattoo into a
+ * single flat image at the skin photo's native resolution — this is what
+ * gets sent to the AI editing model, since it edits one photo, not two
+ * separate layers. Uses object-cover coordinate math to map the on-screen
+ * preview-box position back to the photo's real pixel dimensions.
+ */
+function renderFullSceneToDataUrl({ skinImgEl, tattooImgEl, pos, size, rotation }) {
+  const nativeW = skinImgEl.naturalWidth
+  const nativeH = skinImgEl.naturalHeight
+
+  const boxRatio = CANVAS_W / CANVAS_H
+  const imgRatio = nativeW / nativeH
+  let scale, offsetX, offsetY
+  if (imgRatio > boxRatio) {
+    scale = nativeH / CANVAS_H
+    offsetX = (nativeW - CANVAS_W * scale) / 2
+    offsetY = 0
+  } else {
+    scale = nativeW / CANVAS_W
+    offsetX = 0
+    offsetY = (nativeH - CANVAS_H * scale) / 2
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = nativeW
+  canvas.height = nativeH
+  const ctx = canvas.getContext('2d')
+
+  // Base layer: the skin photo itself, full resolution.
+  ctx.drawImage(skinImgEl, 0, 0, nativeW, nativeH)
+
+  // Tattoo layer, positioned to match the on-screen draft exactly.
+  const nativeX = pos.x * scale + offsetX
+  const nativeY = pos.y * scale + offsetY
+  const nativeSize = size * scale
+
+  ctx.save()
+  ctx.translate(nativeX + nativeSize / 2, nativeY + nativeSize / 2)
+  ctx.rotate((rotation * Math.PI) / 180)
+  ctx.drawImage(tattooImgEl, -nativeSize / 2, -nativeSize / 2, nativeSize, nativeSize)
+  ctx.restore()
+
+  return canvas.toDataURL('image/jpeg', 0.92) // JPEG keeps the upload payload small; no transparency needed here
+}
+
+/** Loads an <img> element from a dataURL/URL, resolving once it's decoded. */
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
 
 export default function SmartTryOn() {
-  const [skinImage, setSkinImage] = useState(null);
-  const [tattooImage, setTattooImage] = useState(null);
-  const [tattooScale, setTattooScale] = useState(1);
-  const [tattooX, setTattooX] = useState(0);
-  const [tattooY, setTattooY] = useState(0);
-  const [isEnhanced, setIsEnhanced] = useState(false);
-  
-  const skinInputRef = useRef(null);
-  const tattooInputRef = useRef(null);
+  const canvasRef = useRef(null)
+  const skinInputRef = useRef(null)
+  const tattooInputRef = useRef(null)
+  const cameraInputRef = useRef(null)
+  const skinImgRef = useRef(null)
+  const dragState = useRef({ dragging: false })
 
-  const handleImageUpload = (e, setter) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setter(reader.result);
-    reader.readAsDataURL(file);
-  };
+  // Skin photo (user-provided — camera or upload). No default image.
+  const [skinPhoto, setSkinPhoto] = useState(null) // dataURL
+  // Tattoo design (user-uploaded). No default image — must upload.
+  const [tattooSrc, setTattooSrc] = useState(null) // dataURL, possibly bg-removed
+  const [tattooOriginal, setTattooOriginal] = useState(null) // pre-bg-removal, for revert
+
+  const [pos, setPos] = useState({ x: CANVAS_W / 2 - 75, y: CANVAS_H / 2 - 75 })
+  const [size, setSize] = useState(150)
+  const [rotation, setRotation] = useState(0)
+  const [activeTool, setActiveTool] = useState('move') // move | resize | rotate
+
+  const [removingBg, setRemovingBg] = useState(false)
+  const [bgRemoved, setBgRemoved] = useState(false)
+  const [bgRemovalError, setBgRemovalError] = useState(null)
+
+  const [enhancing, setEnhancing] = useState(false)
+  const [enhanced, setEnhanced] = useState(false)
+  const [enhancedResult, setEnhancedResult] = useState(null) // dataURL of the Picsart /blend result
+  const [enhanceError, setEnhanceError] = useState(null)
+
+  const clamp = (val, min, max) => Math.min(Math.max(val, min), max)
+
+  // ---- File handling -------------------------------------------------
+
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+
+  const handleSkinUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const dataUrl = await readFileAsDataUrl(file)
+    setSkinPhoto(dataUrl)
+    setEnhanced(false)
+    setEnhancedResult(null)
+    setEnhanceError(null)
+    e.target.value = ''
+  }
+
+  const handleTattooUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const dataUrl = await readFileAsDataUrl(file)
+    setTattooSrc(dataUrl)
+    setTattooOriginal(dataUrl)
+    setBgRemoved(false)
+    setBgRemovalError(null)
+    setEnhanced(false)
+    setEnhancedResult(null)
+    setEnhanceError(null)
+    setPos({ x: CANVAS_W / 2 - 75, y: CANVAS_H / 2 - 75 })
+    setSize(150)
+    setRotation(0)
+    e.target.value = ''
+  }
+
+  // ---- Background removal (Picsart /removebg — fast, hosted) ----
+
+  const handleRemoveBackground = async () => {
+    if (!tattooSrc) return
+    setRemovingBg(true)
+    setBgRemovalError(null)
+    try {
+      const dataUrl = await picsartRemoveBackground(tattooSrc)
+      setTattooSrc(dataUrl)
+      setBgRemoved(true)
+    } catch (err) {
+      setBgRemovalError(
+        'Background removal is unavailable right now. Your design will still apply with its original background.',
+      )
+    } finally {
+      setRemovingBg(false)
+    }
+  }
+
+  const handleRevertBackground = () => {
+    if (tattooOriginal) {
+      setTattooSrc(tattooOriginal)
+      setBgRemoved(false)
+    }
+  }
+
+  // ---- Drag / resize / rotate -----------------------------------------
+
+  const handlePointerDown = (e) => {
+    if (!tattooSrc || !skinPhoto) return
+    e.preventDefault()
+    const rect = canvasRef.current.getBoundingClientRect()
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+
+    if (activeTool === 'move') {
+      dragState.current = {
+        dragging: true,
+        mode: 'move',
+        offsetX: clientX - rect.left - pos.x,
+        offsetY: clientY - rect.top - pos.y,
+      }
+    } else if (activeTool === 'resize') {
+      dragState.current = {
+        dragging: true,
+        mode: 'resize',
+        startX: clientX,
+        startSize: size,
+      }
+    } else if (activeTool === 'rotate') {
+      const centerX = rect.left + pos.x + size / 2
+      const centerY = rect.top + pos.y + size / 2
+      dragState.current = {
+        dragging: true,
+        mode: 'rotate',
+        centerX,
+        centerY,
+        startAngle: Math.atan2(clientY - centerY, clientX - centerX) - (rotation * Math.PI) / 180,
+      }
+    }
+  }
+
+  const handlePointerMove = useCallback(
+    (e) => {
+      if (!dragState.current.dragging || !canvasRef.current) return
+      const rect = canvasRef.current.getBoundingClientRect()
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY
+
+      if (dragState.current.mode === 'move') {
+        const newX = clamp(clientX - rect.left - dragState.current.offsetX, 0, CANVAS_W - size)
+        const newY = clamp(clientY - rect.top - dragState.current.offsetY, 0, CANVAS_H - size)
+        setPos({ x: newX, y: newY })
+      } else if (dragState.current.mode === 'resize') {
+        const delta = clientX - dragState.current.startX
+        const newSize = clamp(dragState.current.startSize + delta, 60, 320)
+        setSize(newSize)
+      } else if (dragState.current.mode === 'rotate') {
+        const angle = Math.atan2(
+          clientY - dragState.current.centerY,
+          clientX - dragState.current.centerX,
+        )
+        const deg = ((angle - dragState.current.startAngle) * 180) / Math.PI
+        setRotation(Math.round(deg))
+      }
+    },
+    [size],
+  )
+
+  const handlePointerUp = () => {
+    dragState.current.dragging = false
+  }
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handlePointerMove)
+    window.addEventListener('mouseup', handlePointerUp)
+    window.addEventListener('touchmove', handlePointerMove, { passive: false })
+    window.addEventListener('touchend', handlePointerUp)
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove)
+      window.removeEventListener('mouseup', handlePointerUp)
+      window.removeEventListener('touchmove', handlePointerMove)
+      window.removeEventListener('touchend', handlePointerUp)
+    }
+  }, [handlePointerMove])
+
+  // ---- Enhance (real AI blend via our secure backend) --------------------
+
+  const handleEnhance = async () => {
+    if (!tattooSrc || !skinPhoto || !skinImgRef.current) return
+    if (!skinImgRef.current.complete || skinImgRef.current.naturalWidth === 0) {
+      setEnhanceError('Your photo is still loading — please wait a moment and try again.')
+      return
+    }
+    setEnhancing(true)
+    setEnhanceError(null)
+    try {
+      const tattooImgEl = await loadImage(tattooSrc)
+      const compositeDataUrl = renderFullSceneToDataUrl({
+        skinImgEl: skinImgRef.current,
+        tattooImgEl,
+        pos,
+        size,
+        rotation,
+      })
+
+      const resultDataUrl = await aiEnhanceViaBackend(compositeDataUrl)
+
+      setEnhancedResult(resultDataUrl)
+      setEnhanced(true)
+    } catch (err) {
+      // Surface the real reason (backend down, HF cold-starting, timeout,
+      // misconfigured env var) instead of one generic message for every
+      // failure — this is what you'll actually see while debugging.
+      setEnhanceError(err?.message || 'Enhance failed. Please try again in a moment.')
+    } finally {
+      setEnhancing(false)
+    }
+  }
 
   const handleReset = () => {
-    setSkinImage(null);
-    setTattooImage(null);
-    setTattooScale(1);
-    setTattooX(0);
-    setTattooY(0);
-    setIsEnhanced(false);
-  };
+    setPos({ x: CANVAS_W / 2 - 75, y: CANVAS_H / 2 - 75 })
+    setSize(150)
+    setRotation(0)
+    setEnhanced(false)
+    setEnhancedResult(null)
+    setEnhanceError(null)
+  }
+
+  const handleStartOver = () => {
+    setSkinPhoto(null)
+    setTattooSrc(null)
+    setTattooOriginal(null)
+    setBgRemoved(false)
+    setBgRemovalError(null)
+    handleReset()
+  }
+
+  const ready = Boolean(skinPhoto && tattooSrc)
 
   return (
-    <section className="relative py-24 bg-ink-black border-t border-line" id="try-on">
+    <section id="try-on" className="relative py-28 md:py-36 bg-ink-charcoal">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="text-center max-w-2xl mx-auto mb-16">
-          <h2 className="font-serif text-4xl md:text-5xl text-white mb-4">
-            <span className="text-gold">Smart</span> Tattoo Try-On
+        <Reveal className="text-center max-w-2xl mx-auto mb-16">
+          <p className="eyebrow mb-4">The Smart Try-On</p>
+          <h2 className="font-serif text-4xl md:text-5xl">
+            See It On Your Skin. <span className="italic text-gold">Before It's Real.</span>
           </h2>
-          <p className="text-gray-400 font-sans">
-            Upload a photo of your placement area, add your design, and enhance it to see how the ink blends with your skin.
+          <p className="mt-5 text-white/50 font-light">
+            Upload a photo of your skin and your tattoo design, then let our
+            enhancement engine blend the ink naturally into your skin tone
+            and texture.
           </p>
-        </div>
+        </Reveal>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 max-w-5xl mx-auto">
-          {/* Canvas Area */}
-          <div className="relative bg-ink-panel rounded-xl overflow-hidden shadow-gold border border-line aspect-[4/5] lg:aspect-square flex items-center justify-center">
-            {!skinImage ? (
-              <div className="text-center p-8">
-                <Upload size={48} className="mx-auto text-gold mb-4 opacity-50" />
-                <p className="text-gray-500">Upload a background photo to begin</p>
-              </div>
-            ) : (
-              <div className="relative w-full h-full overflow-hidden" style={{ touchAction: 'none' }}>
-                <img src={skinImage} alt="Skin Base" className="w-full h-full object-cover" />
-                
-                {tattooImage && (
+        <div className="grid md:grid-cols-[1fr_320px] gap-10 items-start">
+          {/* Canvas */}
+          <Reveal delay={0.1}>
+            <div
+              ref={canvasRef}
+              className="relative mx-auto rounded-lg overflow-hidden border border-ink-line select-none bg-black/30"
+              style={{
+                width: '100%',
+                maxWidth: CANVAS_W,
+                height: CANVAS_H,
+                touchAction: ready && activeTool !== 'move' ? 'none' : undefined,
+              }}
+            >
+              {/* Empty state: no skin photo yet */}
+              {!skinPhoto && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-8 text-center">
+                  <div className="w-14 h-14 rounded-full border border-gold/30 flex items-center justify-center">
+                    <Camera size={22} className="text-gold/70" />
+                  </div>
+                  <p className="text-white/50 text-sm font-light max-w-xs">
+                    Start by adding a photo of the skin you want to preview
+                    the tattoo on.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-3 w-full max-w-xs">
+                    <button
+                      onClick={() => cameraInputRef.current?.click()}
+                      className="gold-btn !px-4 !py-2.5 text-sm flex items-center justify-center gap-2 flex-1"
+                    >
+                      <Camera size={15} />
+                      Take Photo
+                    </button>
+                    <button
+                      onClick={() => skinInputRef.current?.click()}
+                      className="ghost-btn !px-4 !py-2.5 text-sm flex items-center justify-center gap-2 flex-1"
+                    >
+                      <Upload size={15} />
+                      Upload
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Skin photo present */}
+              {skinPhoto && (
+                <img
+                  ref={skinImgRef}
+                  src={skinPhoto}
+                  alt="Your uploaded skin"
+                  className="absolute inset-0 w-full h-full object-cover"
+                  crossOrigin="anonymous"
+                />
+              )}
+              {skinPhoto && <div className="absolute inset-0 bg-black/10 pointer-events-none" />}
+
+              {/* Skin present, no tattoo yet */}
+              {skinPhoto && !tattooSrc && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-8 text-center bg-black/40 backdrop-blur-[2px]">
+                  <div className="w-14 h-14 rounded-full border border-gold/30 flex items-center justify-center">
+                    <ImageOff size={22} className="text-gold/70" />
+                  </div>
+                  <p className="text-white/60 text-sm font-light max-w-xs">
+                    Now upload the tattoo design you want to preview.
+                  </p>
+                  <button
+                    onClick={() => tattooInputRef.current?.click()}
+                    className="gold-btn !px-5 !py-2.5 text-sm flex items-center justify-center gap-2"
+                  >
+                    <Upload size={15} />
+                    Upload Tattoo Design
+                  </button>
+                </div>
+              )}
+
+              {/* Draggable draft overlay — hidden once the real enhanced result is showing */}
+              {skinPhoto && tattooSrc && !enhanced && (
+                <div
+                  onMouseDown={handlePointerDown}
+                  onTouchStart={handlePointerDown}
+                  className={`absolute group ${
+                    activeTool === 'move'
+                      ? 'cursor-grab active:cursor-grabbing'
+                      : activeTool === 'resize'
+                        ? 'cursor-ew-resize'
+                        : 'cursor-alias'
+                  }`}
+                  style={{
+                    left: pos.x,
+                    top: pos.y,
+                    width: size,
+                    height: size,
+                    transform: `rotate(${rotation}deg)`,
+                  }}
+                >
                   <img
-                    src={tattooImage}
-                    alt="Tattoo Overlay"
-                    className="absolute top-1/2 left-1/2 cursor-move"
-                    style={{
-                      transform: `translate(calc(-50% + ${tattooX}px), calc(-50% + ${tattooY}px)) scale(${tattooScale})`,
-                      // THE MAGIC TRICK: Pure CSS blending
-                      mixBlendMode: isEnhanced ? 'multiply' : 'normal',
-                      filter: isEnhanced ? 'contrast(110%) saturate(115%) opacity(0.85)' : 'none',
-                      transition: 'filter 0.3s ease, mix-blend-mode 0.3s ease',
-                      maxWidth: '50%'
-                    }}
+                    src={tattooSrc}
+                    alt="Tattoo design preview"
+                    draggable={false}
+                    className="w-full h-full object-contain opacity-90"
                   />
+                  <div className="absolute inset-0 border-2 border-dashed border-gold/70 rounded-sm pointer-events-none flex items-center justify-center">
+                    {activeTool === 'move' && <Move className="text-gold/70" size={20} />}
+                    {activeTool === 'resize' && <Maximize2 className="text-gold/70" size={20} />}
+                    {activeTool === 'rotate' && <RotateCw className="text-gold/70" size={20} />}
+                  </div>
+                </div>
+              )}
+
+              {/* Real AI-blended result from our backend, once available */}
+              {enhanced && enhancedResult && (
+                <img
+                  src={enhancedResult}
+                  alt="AI-enhanced tattoo preview"
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              )}
+
+              {/* Premium loading state while the AI backend processes the blend */}
+              {enhancing && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 bg-black/70 backdrop-blur-sm">
+                  <div className="relative w-16 h-16">
+                    <div className="absolute inset-0 rounded-full border-2 border-gold/30" />
+                    <div className="absolute inset-0 rounded-full border-2 border-gold animate-ping" />
+                    <div className="absolute inset-2 rounded-full bg-gold/10 flex items-center justify-center">
+                      <Sparkles size={22} className="text-gold animate-pulse" />
+                    </div>
+                  </div>
+                  <p className="text-gold text-sm tracking-wide animate-pulse text-center px-8">
+                    AI is processing ink integration...
+                  </p>
+                  <p className="text-white/30 text-[11px] text-center px-10">
+                    This can take up to a minute for a truly realistic blend.
+                  </p>
+                </div>
+              )}
+
+              {ready && (
+                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full text-[11px] tracking-wide text-white/70 uppercase">
+                  {enhanced ? 'AI-Enhanced Preview' : 'Draft Placement'}
+                </div>
+              )}
+
+              {ready && !enhancing && (
+                <button
+                  onClick={handleStartOver}
+                  className="absolute top-4 right-4 bg-black/60 backdrop-blur-sm p-2 rounded-full text-white/60 hover:text-gold transition-colors"
+                  aria-label="Start over"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+
+            {/* Hidden file inputs */}
+            <input
+              ref={skinInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleSkinUpload}
+            />
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleSkinUpload}
+            />
+            <input
+              ref={tattooInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleTattooUpload}
+            />
+
+            {/* Placement toolbar — editing tools only make sense pre-enhance */}
+            {ready && (
+              <div className="flex gap-2 mt-4 max-w-[520px] mx-auto">
+                {!enhanced &&
+                  [
+                    { id: 'move', label: 'Move', icon: Move },
+                    { id: 'resize', label: 'Size', icon: Maximize2 },
+                    { id: 'rotate', label: 'Rotate', icon: RotateCw },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setActiveTool(t.id)}
+                      className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-md border text-xs tracking-wide transition-colors ${
+                        activeTool === t.id
+                          ? 'border-gold text-gold bg-gold/5'
+                          : 'border-ink-line text-white/50 hover:border-white/30'
+                      }`}
+                    >
+                      <t.icon size={16} />
+                      {t.label.toUpperCase()}
+                    </button>
+                  ))}
+                <button
+                  onClick={handleReset}
+                  className="flex-1 flex flex-col items-center gap-1.5 py-3 rounded-md border border-ink-line text-white/50 hover:border-white/30 text-xs tracking-wide transition-colors"
+                >
+                  <RotateCcw size={16} />
+                  {enhanced ? 'EDIT PLACEMENT' : 'RESET'}
+                </button>
+              </div>
+            )}
+          </Reveal>
+
+          {/* Controls */}
+          <Reveal delay={0.25} className="space-y-6">
+            {skinPhoto && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="ghost-btn !py-2.5 text-xs flex items-center justify-center gap-1.5 flex-1"
+                >
+                  <Camera size={13} /> Retake
+                </button>
+                <button
+                  onClick={() => skinInputRef.current?.click()}
+                  className="ghost-btn !py-2.5 text-xs flex items-center justify-center gap-1.5 flex-1"
+                >
+                  <Upload size={13} /> Replace
+                </button>
+              </div>
+            )}
+
+            {skinPhoto && tattooSrc && (
+              <div className="border-t border-ink-line pt-5 space-y-3">
+                <p className="text-xs uppercase tracking-widest2 text-white/40">
+                  Tattoo Design
+                </p>
+                <button
+                  onClick={() => tattooInputRef.current?.click()}
+                  className="ghost-btn w-full !py-2.5 text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Upload size={13} /> Replace Design
+                </button>
+
+                <button
+                  onClick={bgRemoved ? handleRevertBackground : handleRemoveBackground}
+                  disabled={removingBg}
+                  className="w-full !py-2.5 text-xs rounded-sm border border-gold/40 text-gold flex items-center justify-center gap-1.5 transition-colors hover:bg-gold/5 disabled:opacity-50"
+                >
+                  {removingBg ? (
+                    <>
+                      <Loader2 size={13} className="animate-spin" />
+                      Removing background...
+                    </>
+                  ) : bgRemoved ? (
+                    <>
+                      <RotateCcw size={13} />
+                      Revert Background
+                    </>
+                  ) : (
+                    <>
+                      <Scissors size={13} />
+                      Remove Background
+                    </>
+                  )}
+                </button>
+
+                {bgRemoved && !removingBg && (
+                  <p className="flex items-center gap-1.5 text-[11px] text-gold/80">
+                    <CheckCircle2 size={12} /> Background removed
+                  </p>
+                )}
+                {bgRemovalError && (
+                  <p className="flex items-start gap-1.5 text-[11px] text-white/40">
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    {bgRemovalError}
+                  </p>
                 )}
               </div>
             )}
-          </div>
 
-          {/* Controls Panel */}
-          <div className="space-y-8 flex flex-col justify-center">
-            <div className="space-y-4">
-              <input type="file" ref={skinInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, setSkinImage)} />
-              <button onClick={() => skinInputRef.current?.click()} className="w-full py-4 border border-line rounded-lg text-white hover:border-gold transition-colors flex justify-center items-center gap-2">
-                <Upload size={18} /> {skinImage ? 'Change Canvas Image' : '1. Upload Skin Photo'}
-              </button>
-
-              <input type="file" ref={tattooInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, setTattooImage)} />
-              <button onClick={() => tattooInputRef.current?.click()} className="w-full py-4 border border-line rounded-lg text-white hover:border-gold transition-colors flex justify-center items-center gap-2 disabled:opacity-50" disabled={!skinImage}>
-                <Upload size={18} /> {tattooImage ? 'Change Tattoo Design' : '2. Upload Tattoo Design'}
-              </button>
-            </div>
-
-            {tattooImage && (
-              <div className="space-y-6 bg-ink-panel p-6 rounded-lg border border-line">
-                <div>
-                  <label className="text-xs uppercase tracking-widest text-gold mb-2 block">Size</label>
-                  <input type="range" min="0.5" max="2.5" step="0.1" value={tattooScale} onChange={(e) => setTattooScale(parseFloat(e.target.value))} className="w-full accent-gold" />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs uppercase tracking-widest text-gold mb-2 block">Move X</label>
-                    <input type="range" min="-200" max="200" value={tattooX} onChange={(e) => setTattooX(parseInt(e.target.value))} className="w-full accent-gold" />
-                  </div>
-                  <div>
-                    <label className="text-xs uppercase tracking-widest text-gold mb-2 block">Move Y</label>
-                    <input type="range" min="-200" max="200" value={tattooY} onChange={(e) => setTattooY(parseInt(e.target.value))} className="w-full accent-gold" />
-                  </div>
-                </div>
-
-                <div className="pt-4 grid grid-cols-2 gap-4">
-                  <button onClick={() => setIsEnhanced(!isEnhanced)} className={`py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors ${isEnhanced ? 'bg-gold text-black' : 'bg-transparent border border-gold text-gold'}`}>
-                    <Sparkles size={18} /> {isEnhanced ? 'Enhanced' : 'Enhance & Apply'}
-                  </button>
-                  <button onClick={handleReset} className="py-3 rounded-lg font-medium border border-line text-gray-400 hover:text-white flex items-center justify-center gap-2">
-                    <RotateCcw size={18} /> Reset
-                  </button>
-                </div>
+            {ready && (
+              <div className="border-t border-ink-line pt-5">
+                <label className="flex items-center justify-between text-sm text-white/60 mb-3">
+                  <span>Design Size</span>
+                  <span className="text-gold">{size}px</span>
+                </label>
+                <input
+                  type="range"
+                  min={60}
+                  max={320}
+                  value={size}
+                  onChange={(e) => setSize(Number(e.target.value))}
+                  className="w-full accent-gold"
+                />
               </div>
             )}
-          </div>
+
+            <div className="border-t border-ink-line pt-6 space-y-3 text-sm text-white/50 font-light leading-relaxed">
+              <p><span className="text-white/80">1.</span> Add a photo of your skin.</p>
+              <p><span className="text-white/80">2.</span> Upload your tattoo design.</p>
+              <p><span className="text-white/80">3.</span> Remove its background if needed.</p>
+              <p><span className="text-white/80">4.</span> Position, then Enhance.</p>
+            </div>
+
+            <div className="flex flex-col gap-3 pt-2">
+              <button
+                onClick={handleEnhance}
+                disabled={!ready || enhancing || enhanced}
+                className="gold-btn flex items-center justify-center gap-2"
+              >
+                {enhancing ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Enhancing...
+                  </>
+                ) : enhanced ? (
+                  <>
+                    <CheckCircle2 size={16} />
+                    Enhanced
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={16} />
+                    Enhance &amp; Apply
+                  </>
+                )}
+              </button>
+              {enhanceError && (
+                <p className="flex items-start gap-1.5 text-[11px] text-white/40">
+                  <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                  {enhanceError}
+                </p>
+              )}
+              <button
+                onClick={handleStartOver}
+                disabled={!skinPhoto && !tattooSrc}
+                className="ghost-btn flex items-center justify-center gap-2 !py-3 disabled:opacity-30"
+              >
+                <X size={15} />
+                Start Over
+              </button>
+            </div>
+          </Reveal>
         </div>
       </div>
     </section>
-  );
-                    }
+  )
+}
